@@ -2,36 +2,43 @@ var fs = require("fs")
 var readline = require("readline")
 
 const BOT_LOOP = 60 * 1000
-var botPortal = "./portal.json"
-var dataPath = "/home/cblgh/dats/rotonde-scraped/scraped.txt"
-var portalPath = "/home/cblgh/dats/rotonde-scraped/network.txt"
-var metadataPath = "/home/cblgh/dats/rotonde-scraped/metadata.txt"
+const botPortal = "./portal.json"
+const dataPath = "/home/cblgh/dats/rotonde-scraped/scraped.txt"
+const metadataPath = "/home/cblgh/dats/rotonde-scraped/metadata.txt"
+const dataDelim = "\n"
 var history = {}
-var writeQueue = []
 var mentions = {}
 var metadata = {}
 var bot // contains the bot's portal
-var command = /follow$/
-var dataDelim = "\n"
 
 function findMentions() {
-    var reader = createReader(dataPath)
+    return new Promise((resolve, reject) => {
+        var reader = createReader(dataPath)
 
-    reader.on("line", (line) => {
-        try {
-            var msg = JSON.parse(line)
-            // new mention from a portal outside one of our followers' network
-            if (msg.target && /*follows(msg.target, bot.dat) &&*/ !follows(msg.target, msg.source) && !history[msg.timestamp+msg.source]) {
-                if (!mentions[msg.target]) { mentions[msg.target] = []}
-                mentions[msg.target].push(msg.source)
-                // history[msg.timestamp+msg.source] = true 
-            }
-        } catch (e) { console.error(e) }
-    })
-    // the bot has finished reading the scraped data
-    reader.on("close", () => {
-        processMentions()
-        .then(saveFeed)
+        reader.on("line", (line) => {
+            try {
+                var msg = JSON.parse(line)
+                if (msg.target) { msg.target = cleanURL(msg.target) }
+                if (msg.source) { msg.source = cleanURL(msg.source) }
+                // new mention from a portal outside one of our followers' network
+                if (msg.target && follows(msg.target, bot.dat) && !follows(msg.target, msg.source) && !history[msg.timestamp+msg.source]) {
+                    history[msg.timestamp+msg.source] = true 
+                    // the message contains a malformated target, skip 
+                    if (typeof msg.target === "object") {
+                        return
+                    }
+                    console.log(`adding a mention for ${metadata[msg.target] ? metadata[msg.target].name : msg.target}`)
+                    if (!mentions[msg.target]) { mentions[msg.target] = []}
+                    mentions[msg.target].push(msg.source)
+                }
+            } catch (e) { console.error(e) }
+        })
+        // the bot has finished reading the scraped data
+        reader.on("close", () => {
+            processMentions()
+            .then(saveFeed).then(resolve)
+            .catch(reject)
+        })
     })
 }
 
@@ -59,11 +66,12 @@ function processMentions() {
     var promises = Object.keys(mentions).map((portal) => {
         return new Promise((resolve, reject) => {
             var mentioners = Array.from(new Set(mentions[portal]))
-            var msg = `you have ${mentions[portal].length} new mention${mentions[portal].length > 1 ? "s" : ""} from:\n`
+            var msg = `you have been mentioned by:\n`
             msg += mentioners.map((datUrl) => {
                 if (metadata[datUrl]) { return `@${metadata[datUrl].name} ${datUrl}` }
                 return `${datUrl}`
             }).join("\n")
+            console.log(msg)
             writeToFeed(msg, portal)
             resolve()
         })
@@ -72,25 +80,16 @@ function processMentions() {
 }
 
 function saveFeed() {
-    console.log("saving feed")
-    console.log(bot.feed)
-    return
-    fs.readFile(botPortal, (e, data) => {
-        if (e) { console.error("Error reading bot's portal.json", e); return }
-        try {
-            fs.writeFile(botPortal, JSON.stringify(bot, null, 2), (e) => {
-                if (e) { console.error("Error writing bot's portal.json", e); return }
-                writeQueue = [] // clear queue
-                saveHistory()
-            })
-        } catch (e) { console.error("Error parsing bot's portal.json", e); return }
-    })
+    return new Promise((resolve, reject) => {
+        console.log("saving feed")
+        writeFile(botPortal, JSON.stringify(bot, null, 2))
+        .then(saveHistory)
+        .then(resolve)
+    }).catch((e) => { console.error("Error parsing bot's portal.json", e); reject(e) })
 }
 
 function saveHistory() {
-    fs.writeFile("./history", JSON.stringify(history), (e) => {
-        if (e) { console.error("Failed to write history", e) }
-    })
+    return writeFile("./history", JSON.stringify(history))
 }
 
 function createReader(path) {
@@ -100,6 +99,15 @@ function createReader(path) {
     return reader
 }
 
+function writeFile(file, data) {
+    return new Promise((resolve, reject) => {
+        fs.writeFile(file, data, (e) => {
+            if (e) { return reject(e) }
+            resolve(data)
+        })
+    })
+}
+
 function readFile(file) {
     return new Promise((resolve, reject) => {
         fs.readFile(file, (e, data) => {
@@ -107,6 +115,17 @@ function readFile(file) {
             resolve(data)
         })
     })
+}
+
+function cleanURL(url) {
+    if (url && typeof url === "string") {
+        url = url.trim()
+        while(url[url.length-1] == "/") {
+            url = url.slice(0, -1)
+        }
+        return url + "/"
+    }
+    return url
 }
 
 var metaPattern = /^(\S+)\s(.+)$/
@@ -124,7 +143,7 @@ readFile("./history")
     rawMetadata.forEach((line) => {
         var matches = line.match(metaPattern)
         if (matches) {
-            var dat = matches[1]
+            var dat = cleanURL(matches[1])
             var portal = matches[2]
         } else { return }
         try {
@@ -132,7 +151,6 @@ readFile("./history")
         } catch (e) {
             console.error(`Error parsing json for ${dat}`)
         }
-        console.log(dat, "->", portal)
     })
     return readFile(botPortal)
 })
@@ -141,5 +159,8 @@ readFile("./history")
         bot = JSON.parse(botData.toString())
     } catch (e) { console.error(e); return }
     findMentions()
-    setInterval(findMentions, BOT_LOOP)
+    .then(setTimeout(function timeoutRecursion() {
+        findMentions()
+        .then(() => {console.log("done"); setTimeout(timeoutRecursion, BOT_LOOP)})
+    }, BOT_LOOP))
 })
