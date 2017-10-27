@@ -24,7 +24,7 @@ function findMentions() {
                 if (msg.target) { msg.target = cleanURL(msg.target) }
                 if (msg.source) { msg.source = cleanURL(msg.source) }
                 // new mention from a portal outside one of our followers' network
-                if (msg.target && follows(msg.target, bot.dat) && !follows(msg.target, msg.source) && !history[msg.timestamp+msg.source]) {
+                if (msg.target && follows(msg.target, bot.dat) && !follows(msg.target, msg.source) && msg.target !== msg.source && !history[msg.timestamp+msg.source]) {
                     history[msg.timestamp+msg.source] = true 
                     // the message contains a malformated target, skip 
                     if (typeof msg.target === "object") {
