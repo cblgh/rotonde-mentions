@@ -1,11 +1,14 @@
-var fs = require("fs")
-var readline = require("readline")
+const fs = require("fs")
+const readline = require("readline")
+const datResolve = require("dat-link-resolve")
 
-const BOT_LOOP = 60 * 1000
+const BOT_LOOP = 90 * 1000
 const botPortal = "./portal.json"
 const dataPath = "/home/cblgh/dats/rotonde-scraped/scraped.txt"
 const metadataPath = "/home/cblgh/dats/rotonde-scraped/metadata.txt"
 const dataDelim = "\n"
+const metaPattern = /^(\S+)\s(.+)$/
+
 var history = {}
 var mentions = {}
 var metadata = {}
@@ -25,9 +28,10 @@ function findMentions() {
                     history[msg.timestamp+msg.source] = true 
                     // the message contains a malformated target, skip 
                     if (typeof msg.target === "object") {
+                        console.log("msg.target === object, move on")
                         return
                     }
-                    console.log(`adding a mention for ${metadata[msg.target] ? metadata[msg.target].name : msg.target}`)
+                    console.log(`adding a mention for ${name(msg.target)} from ${name(msg.source)}`)
                     if (!mentions[msg.target]) { mentions[msg.target] = []}
                     mentions[msg.target].push(msg.source)
                 }
@@ -42,17 +46,24 @@ function findMentions() {
     })
 }
 
+function name(portal) {
+    return metadata[portal] ? metadata[portal].name : portal
+}
+
+function resetState() {
+    return new Promise((resolve, reject) => {
+        history = {}
+        mentions = {}
+        metadata = {}
+        resolve()
+    })
+}
+
 function follows(portal, remote) {
     if (metadata[portal]) {
         return metadata[portal].port.indexOf(remote) >= 0
     }
     return false
-}
-
-function follow(target) {
-    if (bot.port.indexOf(target) < 0) {
-        bot.port.push(target)
-    }
 }
 
 function writeToFeed(content, target) {
@@ -70,7 +81,7 @@ function processMentions() {
             msg += mentioners.map((datUrl) => {
                 if (metadata[datUrl]) { return `@${metadata[datUrl].name} ${datUrl}` }
                 return `${datUrl}`
-            }).join("\n")
+            }).join(" \n")
             console.log(msg)
             writeToFeed(msg, portal)
             resolve()
@@ -89,6 +100,7 @@ function saveFeed() {
 }
 
 function saveHistory() {
+    mentions = {}
     return writeFile("./history", JSON.stringify(history))
 }
 
@@ -124,43 +136,55 @@ function cleanURL(url) {
             url = url.slice(0, -1)
         }
         return url + "/"
-    }
+    } 
     return url
 }
 
-var metaPattern = /^(\S+)\s(.+)$/
-readFile("./history")
-.then((data) => {
-    history = JSON.parse(data.toString())
-    return readFile(metadataPath)
-})
-.catch((e) => {
-    console.log(e)
-    return readFile(metadataPath)
-})
-.then((rawMetadata) => {
-    rawMetadata = rawMetadata.toString().split(dataDelim)
-    rawMetadata.forEach((line) => {
-        var matches = line.match(metaPattern)
-        if (matches) {
-            var dat = cleanURL(matches[1])
-            var portal = matches[2]
-        } else { return }
-        try {
-            metadata[dat] = JSON.parse(portal)
-        } catch (e) {
-            console.error(`Error parsing json for ${dat}`)
-        }
+function gatherData() {
+    return readFile("./history")
+    .then((data) => {
+        history = JSON.parse(data.toString())
+        return readFile(metadataPath)
     })
-    return readFile(botPortal)
-})
-.then((botData) => {
-    try {
-        bot = JSON.parse(botData.toString())
-    } catch (e) { console.error(e); return }
-    findMentions()
+    .catch((e) => {
+        console.log(e)
+        return readFile(metadataPath)
+    })
+    .then((rawMetadata) => {
+        rawMetadata = rawMetadata.toString().split(dataDelim)
+        rawMetadata.forEach((line) => {
+            var matches = line.match(metaPattern)
+            if (matches) {
+                var dat = cleanURL(matches[1])
+                var portal = matches[2]
+            } else { return }
+            try {
+                metadata[dat] = JSON.parse(portal)
+            } catch (e) {
+                console.error(`Error parsing json for ${dat}`)
+            }
+        })
+        return readFile(botPortal)
+    })
+    .then((botData) => {
+        try {
+            bot = JSON.parse(botData.toString())
+        } catch (e) { console.error(e); return }
+    })
+}
+
+function loop() {
+    return gatherData()
+    .then(findMentions)
+    .then(resetState)
+}
+
+function main() {
+    loop()
     .then(setTimeout(function timeoutRecursion() {
-        findMentions()
+        loop()
         .then(() => {console.log("done"); setTimeout(timeoutRecursion, BOT_LOOP)})
     }, BOT_LOOP))
-})
+}
+
+main()
